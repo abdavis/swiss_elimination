@@ -5,9 +5,10 @@ use std::rc::Rc;
 fn main() {
     println!("Hello, world!");
 }
-type ContestantRef<S: Seed> = Rc<RefCell<Contestant<S>>>;
+type ContestantRef<S> = Rc<RefCell<Contestant<S>>>;
 struct SwissElimination<S: Seed, const ALLOWED_LOSSES: usize, const FIRST_MOVE_ADVANTAGE: bool> {
-    contestants: Vec<Rc<RefCell<Contestant<S>>>>,
+    active_contestants: Vec<Rc<RefCell<Contestant<S>>>>,
+    eliminated_contestants: Vec<Rc<RefCell<Contestant<S>>>>,
     round: usize,
 }
 
@@ -18,7 +19,7 @@ impl<S: Seed, const ALLOWED_LOSSES: usize, const FIRST_MOVER: bool>
     fn generate_pairings<'a>(
         &mut self,
     ) -> Result<RoundPairings<'a, S, ALLOWED_LOSSES, FIRST_MOVER>, ()> {
-        if self.contestants.iter().any(|con| {
+        if self.active_contestants.iter().any(|con| {
             if let Some(game) = con.borrow().games.last() {
                 if let GameResult::InProgress = game.game_result {
                     return true;
@@ -29,17 +30,30 @@ impl<S: Seed, const ALLOWED_LOSSES: usize, const FIRST_MOVER: bool>
             return Err(());
         }
 
+        self.round += 1;
+
+        let mut survived_contestants = vec![];
+        for contestant in self.active_contestants.iter() {
+            if self.round - contestant.borrow().win_count() >= ALLOWED_LOSSES {
+                self.eliminated_contestants.push(contestant.clone())
+            } else {
+                survived_contestants.push(contestant)
+            }
+        }
+
+        self.active_contestants.sort();
+
         todo!()
     }
 }
 
-struct Pairing<S: Seed>(ContestantRef<S>, ContestantRef<S>);
+struct Pairing<S: Seed, const FIRST_MOVE_ADVANTAGE: bool>(ContestantRef<S>, ContestantRef<S>);
 
 struct RoundPairings<'a, S: Seed, const ALLOWED_LOSSES: usize, const FIRST_MOVER: bool> {
     //take a reference to the tornament to prevent new pairings while games are active
     //once all games are completed, tournament should be set to none to allow new pairings
     tournament: Option<&'a mut SwissElimination<S, ALLOWED_LOSSES, FIRST_MOVER>>,
-    pairs: Vec<Pairing<S>>,
+    pairs: Vec<Pairing<S, FIRST_MOVER>>,
 }
 
 struct Contestant<S: Seed> {
@@ -118,7 +132,7 @@ impl<S: Seed> PartialEq for BracketContestant<S> {
 }
 
 /// represents pairing criteria that must be fulfilled if possible.
-///when any of these criteria are greater than zero, the progam should try
+/// when any of these criteria are greater than zero, the progam should try
 /// reorganizing which player recives a bye, adding extra down floaters, etc
 /// these criteria are considered globally, as opposed to only for the current bracket.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -126,7 +140,7 @@ struct StrongPairingCriteria {
     bye_repeats: usize,
     max_pairing_repeats: usize,
     pairing_repeats: usize,
-    strong_preference_violations: usize,
+    absolute_preference_violations: usize,
 }
 
 impl std::ops::Add for StrongPairingCriteria {
@@ -135,10 +149,10 @@ impl std::ops::Add for StrongPairingCriteria {
     fn add(self, rhs: Self) -> Self::Output {
         Self {
             bye_repeats: self.bye_repeats + rhs.bye_repeats,
-            max_pairing_repeats: self.max_pairing_repeats + rhs.max_pairing_repeats,
+            max_pairing_repeats: self.max_pairing_repeats.max(rhs.max_pairing_repeats),
             pairing_repeats: self.pairing_repeats + rhs.pairing_repeats,
-            strong_preference_violations: self.strong_preference_violations
-                + rhs.strong_preference_violations,
+            absolute_preference_violations: self.absolute_preference_violations
+                + rhs.absolute_preference_violations,
         }
     }
 }
@@ -155,7 +169,8 @@ struct WeakPairingCriteria {
     sum_score_paired_floaters: Reverse<usize>,
     next_unpaired_floaters: usize,
     next_sum_score_paired_floaters: Reverse<usize>,
-    preference_violations: usize,
+    strong_preference_violations: usize,
+    weak_preference_violations: usize,
 }
 
 struct Game<S: Seed> {
